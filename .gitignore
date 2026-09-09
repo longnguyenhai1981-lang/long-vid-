@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+.mypy_cache/
+
+# SQLite database files (local persistence, not committed)
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Claude Code local session state
+.claude/

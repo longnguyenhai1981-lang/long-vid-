@@ -1,0 +1,63 @@
+brand:
+  name: "Một Tí Lý"
+  signature_line: "Chào! Một Tí Lý đây."
+
+audience:
+  core_age:
+    min: 16
+    max: 30
+  prerequisite: "none"
+  general_audience: true
+
+character:
+  name: "Tí"
+  core_trait: "lanh_chanh"
+
+  roles:
+    narrator: true
+    investigator: true
+    character: true
+
+  language:
+    audience_address: "bạn"
+    self_reference: "Tí"
+
+  humor:
+    enabled: true
+    profanity:
+      allowed: true
+      censored_only: true
+      intensity: "light"
+
+science:
+  default_depth: "MEDIUM"
+  accuracy_priority: "HIGH"
+  allow_strategic_incompleteness: true
+
+content:
+  story_first: true
+  drama_allowed: true
+  misleading_clickbait: false
+
+visual:
+  identity: "2D_minimalist"
+  footage_dependency: "low"
+  character_animation: "state_based"
+
+production:
+  target_duration_min: 8
+  target_duration_max: 10
+  target_production_days: 2
+  editor: "CapCut"
+
+optimization:
+  primary_goals:
+    - views
+    - subscribers
+
+immutable_rules:
+  - keep_ti
+  - preserve_science_core
+  - general_audience_accessibility
+  - preserve_2d_minimalist_identity
+  - no_misleading_clickbait

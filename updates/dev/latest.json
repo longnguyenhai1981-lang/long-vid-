@@ -1,9 +1,14 @@
 {
+  "schema_version": 1,
   "channel": "dev",
   "version": "0.1.0-dev",
-  "revision": "b5e96e67a9c6000df32568df8ca8efc1e1a98feb440b9247848226298ae23339",
-  "download_url": "https://raw.githubusercontent.com/longnguyenhai1981-lang/long-vid-/main/downloads/MotilyStudio_QuickInstall_Complete_v0.1-dev.zip",
-  "sha256": "b5e96e67a9c6000df32568df8ca8efc1e1a98feb440b9247848226298ae23339",
-  "published_at": "2026-09-10T14:20:00Z",
-  "release_url": "https://github.com/longnguyenhai1981-lang/long-vid-/blob/main/downloads/MotilyStudio_QuickInstall_Complete_v0.1-dev.zip"
+  "revision": "435738c53a0d92667ffdf64eb5772d24f5dc0e391f23cd7e18271edbd14eaeed",
+  "sha256": "435738c53a0d92667ffdf64eb5772d24f5dc0e391f23cd7e18271edbd14eaeed",
+  "size_bytes": 3236942,
+  "published_at": "2026-09-10T16:32:13Z",
+  "download_url": "https://raw.githubusercontent.com/longnguyenhai1981-lang/long-vid-/main/downloads/MotilyStudio_Runtime_v0.1-dev.zip",
+  "installer_url": "https://raw.githubusercontent.com/longnguyenhai1981-lang/long-vid-/main/downloads/MotilyStudio_PublicInstall_v0.1-dev.zip",
+  "installer_sha256": "05130b2562fff1e8079b0441203bc13a4ade804052d41f28b702b284c1e630b3",
+  "installer_size_bytes": 3169753,
+  "release_url": "https://github.com/longnguyenhai1981-lang/long-vid-/tree/main/updates/dev"
 }

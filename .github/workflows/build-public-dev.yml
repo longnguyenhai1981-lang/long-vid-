@@ -24,7 +24,11 @@ jobs:
           test -f "$BASE"
           rm -rf build-public
           mkdir -p build-public
-          unzip -q "$BASE" -d build-public/base
+
+          # The first bootstrap was uploaded through a text-only connector, so
+          # the repository object contains base64 text. Decode it once here.
+          base64 -d "$BASE" > build-public/bootstrap.zip
+          unzip -q build-public/bootstrap.zip -d build-public/base
           ROOT="$(find build-public/base -mindepth 1 -maxdepth 1 -type d | head -1)"
           test -n "$ROOT"
 

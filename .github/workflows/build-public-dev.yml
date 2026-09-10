@@ -1,0 +1,82 @@
+name: Build Motily public dev channel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'patches/public-channel/**'
+      - '.github/workflows/build-public-dev.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build public installer and update payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='downloads/MotilyStudio_QuickInstall_Complete_v0.1-dev.zip'
+          test -f "$BASE"
+          rm -rf build-public
+          mkdir -p build-public
+          unzip -q "$BASE" -d build-public/base
+          ROOT="$(find build-public/base -mindepth 1 -maxdepth 1 -type d | head -1)"
+          test -n "$ROOT"
+
+          cp patches/public-channel/update_channel.py "$ROOT/app/studio/update_channel.py"
+          cp patches/public-channel/web.py "$ROOT/app/studio/web.py"
+
+          mkdir -p build-public/runtime/MotilyStudio_Runtime
+          cp -a "$ROOT/app" build-public/runtime/MotilyStudio_Runtime/
+          cp -a "$ROOT/pyproject.toml" build-public/runtime/MotilyStudio_Runtime/
+          [ -d "$ROOT/scripts" ] && cp -a "$ROOT/scripts" build-public/runtime/MotilyStudio_Runtime/ || true
+          [ -d "$ROOT/ti_assets_v1" ] && cp -a "$ROOT/ti_assets_v1" build-public/runtime/MotilyStudio_Runtime/ || true
+          [ -f "$ROOT/README.md" ] && cp "$ROOT/README.md" build-public/runtime/MotilyStudio_Runtime/ || true
+          find build-public/runtime -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find build-public/runtime -type f -name '*.pyc' -delete
+
+          mkdir -p downloads updates/dev
+          rm -f downloads/MotilyStudio_Runtime_v0.1-dev.zip downloads/MotilyStudio_PublicInstall_v0.1-dev.zip
+          (cd build-public/runtime && zip -qr "$GITHUB_WORKSPACE/downloads/MotilyStudio_Runtime_v0.1-dev.zip" MotilyStudio_Runtime)
+
+          INSTALL_ROOT_NAME='MotilyStudio_PublicInstall'
+          mkdir -p "build-public/install/$INSTALL_ROOT_NAME"
+          cp -a "$ROOT/." "build-public/install/$INSTALL_ROOT_NAME/"
+          (cd build-public/install && zip -qr "$GITHUB_WORKSPACE/downloads/MotilyStudio_PublicInstall_v0.1-dev.zip" "$INSTALL_ROOT_NAME")
+
+          SHA="$(sha256sum downloads/MotilyStudio_Runtime_v0.1-dev.zip | awk '{print $1}')"
+          SIZE="$(stat -c%s downloads/MotilyStudio_Runtime_v0.1-dev.zip)"
+          NOW="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          cat > updates/dev/latest.json <<EOF
+          {
+            "schema_version": 1,
+            "channel": "dev",
+            "version": "0.1.0-dev",
+            "revision": "$SHA",
+            "sha256": "$SHA",
+            "size_bytes": $SIZE,
+            "published_at": "$NOW",
+            "download_url": "https://raw.githubusercontent.com/longnguyenhai1981-lang/long-vid-/main/downloads/MotilyStudio_Runtime_v0.1-dev.zip",
+            "installer_url": "https://raw.githubusercontent.com/longnguyenhai1981-lang/long-vid-/main/downloads/MotilyStudio_PublicInstall_v0.1-dev.zip",
+            "release_url": "https://github.com/longnguyenhai1981-lang/long-vid-/tree/main/updates/dev"
+          }
+          EOF
+
+      - name: Publish generated dev build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add downloads/MotilyStudio_Runtime_v0.1-dev.zip downloads/MotilyStudio_PublicInstall_v0.1-dev.zip updates/dev/latest.json
+          if git diff --cached --quiet; then
+            echo 'No build changes to publish.'
+            exit 0
+          fi
+          git commit -m 'Publish Motily public dev build'
+          git push

@@ -59,6 +59,17 @@ jobs:
           if (!(Test-Path 'build-source/packaging/windows/MotilyStudio.iss')) { throw 'Inno Setup script missing after overlay' }
           if (!(Select-String -Path 'build-source/app/studio/web.py' -Pattern 'GitHubReleaseUpdateChannel' -Quiet)) { throw 'Studio is not wired to release updater' }
 
+          # PyInstaller --windowed sets sys.stdout/sys.stderr to None. Uvicorn's
+          # default logging formatter probes .isatty(), which crashes on startup.
+          # Disable Uvicorn's default log_config for the packaged desktop app.
+          $cliPath = 'build-source/app/cli/main.py'
+          $cli = Get-Content $cliPath -Raw
+          $needle = 'uvicorn.run(studio_app, host=host, port=port, log_level="warning")'
+          $replacement = 'uvicorn.run(studio_app, host=host, port=port, log_level="warning", log_config=None, access_log=False)'
+          if (-not $cli.Contains($needle)) { throw 'Expected uvicorn.run call not found; refusing unsafe patch' }
+          $cli = $cli.Replace($needle, $replacement)
+          Set-Content -Path $cliPath -Value $cli -Encoding utf8NoBOM
+
       - name: Install FFmpeg and FFprobe
         shell: pwsh
         run: |
@@ -96,6 +107,29 @@ jobs:
             --add-data "ti_assets_v1;ti_assets_v1" `
             packaging/windows/entry.py
           if (!(Test-Path "dist/MotilyStudio/MotilyStudio.exe")) { throw "MotilyStudio.exe was not produced" }
+
+      - name: Packaged app startup smoke PASS
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist/MotilyStudio/MotilyStudio.exe').Path
+          $proc = Start-Process -FilePath $exe -PassThru
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Seconds 1
+              if ($proc.HasExited) { throw "Packaged app exited early with code $($proc.ExitCode)" }
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
+                if ($r.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw 'Packaged app did not become healthy on http://127.0.0.1:8765/api/health within 60s' }
+            Write-Host 'Packaged app startup smoke passed.'
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
 
       - name: Install Inno Setup
         shell: pwsh

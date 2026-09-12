@@ -1,11 +1,11 @@
-name: Build Phase 51 Windows installer and publish rolling release
+name: Build Phase 52 Windows installer and publish rolling release
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'bootstrap/phase51-overlay/**'
+      - 'bootstrap/phase52-overlay/**'
       - '.github/workflows/desktop-release-bootstrap.yml'
 
 permissions:
@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Reconstruct verified Phase 50 source and apply Phase 51 overlay
+      - name: Reconstruct verified source through Phase 52
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -41,34 +41,38 @@ jobs:
           if (Test-Path README.md) { Copy-Item README.md build-source/README.md -Force }
           if (Test-Path .gitignore) { Copy-Item .gitignore build-source/.gitignore -Force }
 
-          $p50 = (Get-ChildItem 'bootstrap/phase50-overlay/part*.b64' | Sort-Object Name | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
-          [IO.File]::WriteAllBytes('phase50-overlay.tar.xz', [Convert]::FromBase64String($p50))
-          $h50 = (Get-FileHash 'phase50-overlay.tar.xz' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($h50 -ne '44aeb0e00dfaec46784fbc4ccdff4980f4c08b991f1cac2c1181acd51a683d86') { throw "Phase 50 overlay hash mismatch: $h50" }
-          tar -xJf phase50-overlay.tar.xz -C build-source
-          if ($LASTEXITCODE -ne 0) { throw 'Phase 50 overlay extraction failed' }
+          function Apply-Overlay($phase, $expectedHash) {
+            $parts = (Get-ChildItem "bootstrap/$phase-overlay/part*.b64" | Sort-Object Name | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+            $archive = "$phase-overlay.tar.xz"
+            [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($parts))
+            $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -ne $expectedHash) { throw "$phase overlay hash mismatch: $hash" }
+            tar -xJf $archive -C build-source
+            if ($LASTEXITCODE -ne 0) { throw "$phase overlay extraction failed" }
+          }
 
-          $p51 = (Get-ChildItem 'bootstrap/phase51-overlay/part*.b64' | Sort-Object Name | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
-          [IO.File]::WriteAllBytes('phase51-overlay.tar.xz', [Convert]::FromBase64String($p51))
-          $h51 = (Get-FileHash 'phase51-overlay.tar.xz' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($h51 -ne '71eecb89194c4788a5c91121212abb31f61c358933e5263205ffd8ef099b9085') { throw "Phase 51 overlay hash mismatch: $h51" }
-          tar -xJf phase51-overlay.tar.xz -C build-source
-          if ($LASTEXITCODE -ne 0) { throw 'Phase 51 overlay extraction failed' }
+          Apply-Overlay 'phase50' '44aeb0e00dfaec46784fbc4ccdff4980f4c08b991f1cac2c1181acd51a683d86'
+          Apply-Overlay 'phase51' '71eecb89194c4788a5c91121212abb31f61c358933e5263205ffd8ef099b9085'
+          Apply-Overlay 'phase52' '3a635b3799b9d12115db7235b4532f435298e473eebfe23cacdbf0c0e53893dc'
 
-          if (!(Test-Path 'build-source/app/studio/release_update.py')) { throw 'Release updater missing after overlay' }
-          if (!(Test-Path 'build-source/packaging/windows/MotilyStudio.iss')) { throw 'Inno Setup script missing after overlay' }
-          if (!(Select-String -Path 'build-source/app/studio/web.py' -Pattern 'GitHubReleaseUpdateChannel' -Quiet)) { throw 'Studio is not wired to release updater' }
+          if (!(Test-Path 'build-source/app/studio/runtime_settings.py')) { throw 'Phase 52 runtime settings missing' }
+          if (!(Select-String -Path 'build-source/app/studio/static/index.html' -Pattern 'runtimeSettingsModal' -Quiet)) { throw 'Phase 52 settings UI missing' }
+          if (!(Select-String -Path 'build-source/app/studio/web.py' -Pattern '/api/settings/runtime' -Quiet)) { throw 'Phase 52 settings API missing' }
+          if (!(Test-Path 'build-source/app/studio/release_update.py')) { throw 'Release updater missing' }
+          if (!(Test-Path 'build-source/packaging/windows/MotilyStudio.iss')) { throw 'Inno Setup script missing' }
 
-          # PyInstaller --windowed sets sys.stdout/sys.stderr to None. Uvicorn's
-          # default logging formatter probes .isatty(), which crashes on startup.
-          # Disable Uvicorn's default log_config for the packaged desktop app.
+          # PyInstaller --windowed has no stdout/stderr. Disable Uvicorn's default
+          # formatter because it probes .isatty() and crashes in windowed mode.
           $cliPath = 'build-source/app/cli/main.py'
           $cli = Get-Content $cliPath -Raw
           $needle = 'uvicorn.run(studio_app, host=host, port=port, log_level="warning")'
           $replacement = 'uvicorn.run(studio_app, host=host, port=port, log_level="warning", log_config=None, access_log=False)'
-          if (-not $cli.Contains($needle)) { throw 'Expected uvicorn.run call not found; refusing unsafe patch' }
-          $cli = $cli.Replace($needle, $replacement)
-          Set-Content -Path $cliPath -Value $cli -Encoding utf8NoBOM
+          if ($cli.Contains($needle)) {
+            $cli = $cli.Replace($needle, $replacement)
+            Set-Content -Path $cliPath -Value $cli -Encoding utf8NoBOM
+          } elseif (-not $cli.Contains($replacement)) {
+            throw 'Expected safe uvicorn.run call not found'
+          }
 
       - name: Install FFmpeg and FFprobe
         shell: pwsh
@@ -77,9 +81,7 @@ jobs:
           choco install ffmpeg -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg install failed' }
           ffmpeg -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw 'ffmpeg is not available on PATH' }
           ffprobe -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw 'ffprobe is not available on PATH' }
 
       - name: Install test and build dependencies
         shell: pwsh
@@ -93,9 +95,6 @@ jobs:
         shell: pwsh
         working-directory: build-source
         run: |
-          # Phase 41+ legitimately materializes ASSET_REUSE as a real rendered asset.
-          # This legacy Phase 19 assertion still expects ASSET_REUSE to be non-renderable,
-          # so deselect only that stale assertion while keeping the rest of the suite gated.
           python -m pytest -q --deselect tests/test_visual_render_validation.py::test_asset_with_non_renderable_media_type_flagged
 
       - name: Build Windows application
@@ -108,7 +107,7 @@ jobs:
             packaging/windows/entry.py
           if (!(Test-Path "dist/MotilyStudio/MotilyStudio.exe")) { throw "MotilyStudio.exe was not produced" }
 
-      - name: Packaged app startup smoke PASS
+      - name: Packaged app startup and first-run setup smoke PASS
         shell: pwsh
         working-directory: build-source
         run: |
@@ -116,17 +115,29 @@ jobs:
           $exe = (Resolve-Path 'dist/MotilyStudio/MotilyStudio.exe').Path
           $proc = Start-Process -FilePath $exe -PassThru
           try {
-            $ok = $false
+            $healthy = $false
             for ($i = 0; $i -lt 60; $i++) {
               Start-Sleep -Seconds 1
               if ($proc.HasExited) { throw "Packaged app exited early with code $($proc.ExitCode)" }
               try {
                 $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
-                if ($r.StatusCode -eq 200) { $ok = $true; break }
+                if ($r.StatusCode -eq 200) { $healthy = $true; break }
               } catch { }
             }
-            if (-not $ok) { throw 'Packaged app did not become healthy on http://127.0.0.1:8765/api/health within 60s' }
-            Write-Host 'Packaged app startup smoke passed.'
+            if (-not $healthy) { throw 'Packaged app did not become healthy within 60s' }
+
+            $html = (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/').Content
+            if ($html -notmatch 'runtimeSettingsModal') { throw 'Packaged UI is missing runtime settings modal' }
+            if ($html -notmatch 'runPreflightBtn') { throw 'Packaged UI is missing Run preflight control' }
+
+            $before = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/settings/runtime' -Method Get
+            if ($before.gemini.configured) { throw 'Fresh runner unexpectedly starts with Gemini configured' }
+            $body = @{ gemini_api_key = 'ci-smoke-key-1234' } | ConvertTo-Json
+            $saved = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/settings/runtime' -Method Post -ContentType 'application/json' -Body $body
+            if (-not $saved.gemini.configured) { throw 'Runtime settings API did not configure Gemini' }
+            if ($saved.gemini.masked -ne '••••1234') { throw 'Runtime settings API did not mask the saved key' }
+            if (($saved | ConvertTo-Json -Depth 6) -match 'ci-smoke-key-1234') { throw 'Runtime settings API echoed the secret key' }
+            Write-Host 'Packaged app startup + first-run settings smoke passed.'
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }

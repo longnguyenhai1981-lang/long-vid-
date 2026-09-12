@@ -1,0 +1,121 @@
+name: Build Phase 51 Windows installer and publish rolling release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'bootstrap/phase51-overlay/**'
+      - '.github/workflows/desktop-release-bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: motily-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  desktop-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct verified Phase 50 source and apply Phase 51 overlay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build-source | Out-Null
+          Copy-Item app build-source/app -Recurse -Force
+          Copy-Item pyproject.toml build-source/pyproject.toml -Force
+          if (Test-Path tests) { Copy-Item tests build-source/tests -Recurse -Force }
+          if (Test-Path scripts) { Copy-Item scripts build-source/scripts -Recurse -Force }
+          if (Test-Path docs) { Copy-Item docs build-source/docs -Recurse -Force }
+          if (Test-Path ti_assets_v1) { Copy-Item ti_assets_v1 build-source/ti_assets_v1 -Recurse -Force }
+          if (Test-Path README.md) { Copy-Item README.md build-source/README.md -Force }
+          if (Test-Path .gitignore) { Copy-Item .gitignore build-source/.gitignore -Force }
+
+          $p50 = (Get-ChildItem 'bootstrap/phase50-overlay/part*.b64' | Sort-Object Name | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('phase50-overlay.tar.xz', [Convert]::FromBase64String($p50))
+          $h50 = (Get-FileHash 'phase50-overlay.tar.xz' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($h50 -ne '44aeb0e00dfaec46784fbc4ccdff4980f4c08b991f1cac2c1181acd51a683d86') { throw "Phase 50 overlay hash mismatch: $h50" }
+          tar -xJf phase50-overlay.tar.xz -C build-source
+          if ($LASTEXITCODE -ne 0) { throw 'Phase 50 overlay extraction failed' }
+
+          $p51 = (Get-ChildItem 'bootstrap/phase51-overlay/part*.b64' | Sort-Object Name | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('phase51-overlay.tar.xz', [Convert]::FromBase64String($p51))
+          $h51 = (Get-FileHash 'phase51-overlay.tar.xz' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($h51 -ne '71eecb89194c4788a5c91121212abb31f61c358933e5263205ffd8ef099b9085') { throw "Phase 51 overlay hash mismatch: $h51" }
+          tar -xJf phase51-overlay.tar.xz -C build-source
+          if ($LASTEXITCODE -ne 0) { throw 'Phase 51 overlay extraction failed' }
+
+          if (!(Test-Path 'build-source/app/studio/release_update.py')) { throw 'Release updater missing after overlay' }
+          if (!(Test-Path 'build-source/packaging/windows/MotilyStudio.iss')) { throw 'Inno Setup script missing after overlay' }
+          if (!(Select-String -Path 'build-source/app/studio/web.py' -Pattern 'GitHubReleaseUpdateChannel' -Quiet)) { throw 'Studio is not wired to release updater' }
+
+      - name: Install test and build dependencies
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install pyinstaller
+
+      - name: Test PASS
+        shell: pwsh
+        working-directory: build-source
+        run: python -m pytest -q
+
+      - name: Build Windows application
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed --name MotilyStudio `
+            --add-data "app/studio/static;app/studio/static" `
+            --add-data "ti_assets_v1;ti_assets_v1" `
+            packaging/windows/entry.py
+          if (!(Test-Path "dist/MotilyStudio/MotilyStudio.exe")) { throw "MotilyStudio.exe was not produced" }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build full Windows installer PASS
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-installer | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/windows/MotilyStudio.iss
+          $setup = Get-Item "dist-installer/MotilyStudioSetup.exe"
+          if ($setup.Length -lt 262144) { throw "Installer is unexpectedly small: $($setup.Length) bytes" }
+          Write-Host "Installer bytes: $($setup.Length)"
+          Get-FileHash $setup.FullName -Algorithm SHA256
+
+      - name: Publish or replace rolling Release desktop-latest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f desktop-latest $env:GITHUB_SHA
+          git push --force origin refs/tags/desktop-latest
+          gh release view desktop-latest --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create desktop-latest --repo $env:GITHUB_REPOSITORY --title "Motily Desktop Latest" --notes "Rolling Windows desktop build from $env:GITHUB_SHA"
+          } else {
+            gh release edit desktop-latest --repo $env:GITHUB_REPOSITORY --title "Motily Desktop Latest" --notes "Rolling Windows desktop build from $env:GITHUB_SHA"
+          }
+          gh release upload desktop-latest "build-source/dist-installer/MotilyStudioSetup.exe" --repo $env:GITHUB_REPOSITORY --clobber
+
+      - name: Actions artifact fallback only
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: MotilyStudioSetup-fallback
+          path: build-source/dist-installer/MotilyStudioSetup.exe
+          retention-days: 3

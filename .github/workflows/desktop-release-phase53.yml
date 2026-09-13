@@ -1,0 +1,193 @@
+name: Build Phase 53 Windows installer with visible Settings
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/desktop-release-phase53.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: motily-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  desktop-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct verified source through Phase 52
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build-source | Out-Null
+          Copy-Item app build-source/app -Recurse -Force
+          Copy-Item pyproject.toml build-source/pyproject.toml -Force
+          if (Test-Path tests) { Copy-Item tests build-source/tests -Recurse -Force }
+          if (Test-Path scripts) { Copy-Item scripts build-source/scripts -Recurse -Force }
+          if (Test-Path docs) { Copy-Item docs build-source/docs -Recurse -Force }
+          if (Test-Path ti_assets_v1) { Copy-Item ti_assets_v1 build-source/ti_assets_v1 -Recurse -Force }
+          if (Test-Path README.md) { Copy-Item README.md build-source/README.md -Force }
+          if (Test-Path .gitignore) { Copy-Item .gitignore build-source/.gitignore -Force }
+
+          function Apply-Overlay($phase, $expectedHash) {
+            $parts = (Get-ChildItem "bootstrap/$phase-overlay/part*.b64" | Sort-Object Name | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+            $archive = "$phase-overlay.tar.xz"
+            [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($parts))
+            $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -ne $expectedHash) { throw "$phase overlay hash mismatch: $hash" }
+            tar -xJf $archive -C build-source
+            if ($LASTEXITCODE -ne 0) { throw "$phase overlay extraction failed" }
+          }
+
+          Apply-Overlay 'phase50' '44aeb0e00dfaec46784fbc4ccdff4980f4c08b991f1cac2c1181acd51a683d86'
+          Apply-Overlay 'phase51' '71eecb89194c4788a5c91121212abb31f61c358933e5263205ffd8ef099b9085'
+          Apply-Overlay 'phase52' '3a635b3799b9d12115db7235b4532f435298e473eebfe23cacdbf0c0e53893dc'
+
+          if (!(Test-Path 'build-source/app/studio/runtime_settings.py')) { throw 'Phase 52 runtime settings missing' }
+          if (!(Select-String -Path 'build-source/app/studio/static/index.html' -Pattern 'runtimeSettingsModal' -Quiet)) { throw 'Runtime settings modal missing' }
+          if (!(Select-String -Path 'build-source/app/studio/web.py' -Pattern '/api/settings/runtime' -Quiet)) { throw 'Runtime settings API missing' }
+
+      - name: Phase 53 expose Settings button and hard-wire click action
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $indexPath = 'build-source/app/studio/static/index.html'
+          $html = Get-Content $indexPath -Raw
+          $marker = '<button class="new-project" id="newProjectBtn">+ New production</button>'
+          if (-not $html.Contains($marker)) { throw 'New production button marker not found; refusing blind UI patch' }
+          if (-not $html.Contains('id="runtimeSettingsBtnVisible"')) {
+            $button = '<button class="new-project" id="runtimeSettingsBtnVisible" type="button" onclick="document.getElementById(''runtimeSettingsModal'')?.classList.remove(''hidden'')">⚙ Settings</button>'
+            $html = $html.Replace($marker, "$marker`r`n      $button")
+            Set-Content -Path $indexPath -Value $html -Encoding utf8NoBOM
+          }
+          $check = Get-Content $indexPath -Raw
+          if (-not $check.Contains('id="runtimeSettingsBtnVisible"')) { throw 'Visible Settings button injection failed' }
+          if (-not $check.Contains("document.getElementById('runtimeSettingsModal')?.classList.remove('hidden')")) { throw 'Settings click action injection failed' }
+
+          # PyInstaller --windowed has no stdout/stderr. Keep Uvicorn logging safe.
+          $cliPath = 'build-source/app/cli/main.py'
+          $cli = Get-Content $cliPath -Raw
+          $needle = 'uvicorn.run(studio_app, host=host, port=port, log_level="warning")'
+          $replacement = 'uvicorn.run(studio_app, host=host, port=port, log_level="warning", log_config=None, access_log=False)'
+          if ($cli.Contains($needle)) {
+            $cli = $cli.Replace($needle, $replacement)
+            Set-Content -Path $cliPath -Value $cli -Encoding utf8NoBOM
+          } elseif (-not $cli.Contains($replacement)) {
+            throw 'Expected safe uvicorn.run call not found'
+          }
+
+      - name: Install FFmpeg and FFprobe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install ffmpeg -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg install failed' }
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      - name: Install test and build dependencies
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install pyinstaller
+
+      - name: Test PASS
+        shell: pwsh
+        working-directory: build-source
+        run: python -m pytest -q --deselect tests/test_visual_render_validation.py::test_asset_with_non_renderable_media_type_flagged
+
+      - name: Build Windows application
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed --name MotilyStudio `
+            --add-data "app/studio/static;app/studio/static" `
+            --add-data "ti_assets_v1;ti_assets_v1" `
+            packaging/windows/entry.py
+          if (!(Test-Path "dist/MotilyStudio/MotilyStudio.exe")) { throw 'MotilyStudio.exe was not produced' }
+
+      - name: Packaged UI Settings smoke PASS
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist/MotilyStudio/MotilyStudio.exe').Path
+          $proc = Start-Process -FilePath $exe -PassThru
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Seconds 1
+              if ($proc.HasExited) { throw "Packaged app exited early with code $($proc.ExitCode)" }
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
+                if ($r.StatusCode -eq 200) { $healthy = $true; break }
+              } catch { }
+            }
+            if (-not $healthy) { throw 'Packaged app did not become healthy within 60s' }
+
+            $html = (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/').Content
+            if ($html -notmatch 'id="runtimeSettingsBtnVisible"') { throw 'Packaged UI is missing visible Settings button' }
+            if ($html -notmatch 'runtimeSettingsModal') { throw 'Packaged UI is missing Settings modal' }
+            if ($html -notmatch 'runPreflightBtn') { throw 'Packaged UI is missing Run preflight control' }
+            if ($html -notmatch "document.getElementById\('runtimeSettingsModal'\).*classList.remove\('hidden'\)") { throw 'Packaged Settings button is not wired to open the modal' }
+
+            $before = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/settings/runtime' -Method Get
+            $body = @{ gemini_api_key = 'ci-smoke-key-1234' } | ConvertTo-Json
+            $saved = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/settings/runtime' -Method Post -ContentType 'application/json' -Body $body
+            if (-not $saved.gemini.configured) { throw 'Runtime settings API did not configure Gemini' }
+            if (($saved | ConvertTo-Json -Depth 6) -match 'ci-smoke-key-1234') { throw 'Runtime settings API echoed the secret key' }
+            Write-Host 'Packaged visible Settings UI + runtime settings API smoke passed.'
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build full Windows installer PASS
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-installer | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/windows/MotilyStudio.iss
+          $setup = Get-Item 'dist-installer/MotilyStudioSetup.exe'
+          if ($setup.Length -lt 262144) { throw "Installer is unexpectedly small: $($setup.Length) bytes" }
+          Write-Host "Installer bytes: $($setup.Length)"
+          Get-FileHash $setup.FullName -Algorithm SHA256
+
+      - name: Publish or replace rolling Release desktop-latest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f desktop-latest $env:GITHUB_SHA
+          git push --force origin refs/tags/desktop-latest
+          gh release view desktop-latest --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create desktop-latest --repo $env:GITHUB_REPOSITORY --title 'Motily Desktop Latest' --notes "Rolling Windows desktop build from $env:GITHUB_SHA"
+          } else {
+            gh release edit desktop-latest --repo $env:GITHUB_REPOSITORY --title 'Motily Desktop Latest' --notes "Rolling Windows desktop build from $env:GITHUB_SHA"
+          }
+          gh release upload desktop-latest 'build-source/dist-installer/MotilyStudioSetup.exe' --repo $env:GITHUB_REPOSITORY --clobber
+
+      - name: Actions artifact fallback only
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: MotilyStudioSetup-fallback
+          path: build-source/dist-installer/MotilyStudioSetup.exe
+          retention-days: 3
